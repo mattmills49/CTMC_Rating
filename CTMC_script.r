@@ -4,10 +4,14 @@ library(XML)
 library(ggplot2)
 
 GetScores <- function(yearvec,homeadjust = T,fbs = T){
+  #GetScores takes in 3 arguments
+  # yearvec - the vector of years you wish to get the schedule for
+  # homeadjust - if true then subtract 1.5 points from the home team and add 1.5 to the away team
+  # fbs - if true it removes all games where each team didn't play at least two games in the season in question
   scores <- data.frame()
   for(year in yearvec){
     if(year == 2014){
-      rawscores <- readHTMLTable(paste0("http://www.sports-reference.com/cfb/years/",year,"-schedule.html"),header = F,stringsAsFactors = F,which = 1,)
+      rawscores <- readHTMLTable(paste0("http://www.sports-reference.com/cfb/years/",year,"-schedule.html"),header = F,stringsAsFactors = F,which = 1)
       rawscores <- rawscores %>% select(-V11,-V13)
       names(rawscores) <- c("GameNum","Week","Date","Time","Day","Winner","Winner_Points","Home_Away","Loser","Loser_Points","Notes")
       rawscores <- rawscores %>% select(-Time)
@@ -24,8 +28,8 @@ GetScores <- function(yearvec,homeadjust = T,fbs = T){
     rawscores$Year <- year
     scores <- rbind(scores,rawscores)
   }
-  scores <- scores %>% filter(GameNum != "Rk",Winner_Points != "")
-  scores$Winner <- sapply(scores$Winner,function(x) ifelse(substr(x,1,1) == "(",substr(x,regexpr(")",x)[[1]][1] + 2,nchar(x)),x))
+  scores <- scores %>% filter(GameNum != "Rk",Winner_Points != "") # this removes the rows with labels and any games that haven't happend yet 
+  scores$Winner <- sapply(scores$Winner,function(x) ifelse(substr(x,1,1) == "(",substr(x,regexpr(")",x)[[1]][1] + 2,nchar(x)),x)) # removes any rankings from the team name
   scores$Loser <- sapply(scores$Loser,function(x) ifelse(substr(x,1,1) == "(",substr(x,regexpr(")",x)[[1]][1] + 2,nchar(x)),x))
   scores$Location <- with(scores,ifelse(Home_Away == "@","Away",ifelse(Notes == "","Home","Neutral")))
   scores$Winner_Points <- as.numeric(scores$Winner_Points)
@@ -48,13 +52,27 @@ GetScores <- function(yearvec,homeadjust = T,fbs = T){
 }
 
 CTMC <- function(scores,best = "big"){
+  # CTMC takes in the score output from the GetScores function.
+  # It also has the option to decide which way the rating system is best. The difference is explained in the post
   winnerscores <- scores %>% select(Winner,Loser,Winner_Points)
   names(winnerscores) <- c("Team","Opponent","Points")
   loserscores <- scores %>% select(Loser,Winner,Loser_Points)
   names(loserscores) <- c("Team","Opponent","Points")
-  teamscores <- rbind(winnerscores,loserscores) %>% group_by(Team,Opponent) %>% summarize(Points = sum(Points))
+  teamscores <- rbind(winnerscores,loserscores) %>% group_by(Team,Opponent) %>% summarize(Points = sum(Points)) # sometimes teams play more than once in a season so we have to add together all the points from both games into 1 game
   if(best == "big"){
     teamscores <- teamscores %>% spread(Team,Points)
+    # if you aren't familiar with the tidy package then the spread function may not make much intuitive sense. Essentially it takes our long data frame and makes it wide
+    # Example of spread Function
+    
+    # Team   Opponent Points
+    # Team-A Team-B   12
+    # Team-A Team-C   14
+    
+    # spread(Opponent,Points)
+    
+    # Team   Team-B Team-C
+    # Team-A 12     14
+    # now we have a transition matrix
     teams <- teamscores$Opponent
     teamscores[is.na(teamscores)] <- 0
     Tmatrix <- data.matrix(select(teamscores,-Opponent))
@@ -66,6 +84,7 @@ CTMC <- function(scores,best = "big"){
     Tmatrix <- data.matrix(select(teamscores,-Team))
   }
   rownames(Tmatrix) <- teams
+  # We need to convert the transition rate matrix into the system of equations described in the post
   leavingrate <- rowSums(Tmatrix)
   Ematrix <- t(Tmatrix)
   for(i in 1:nrow(Ematrix)){
@@ -101,7 +120,13 @@ Massey <- function(scores){
   return(yearratings)
 }
 
-RatingsPredict <- function(scores,yearvec,method = "CTMC",best = "small",startweek = 5){
+RatingsPredict <- function(scores,yearvec,method = "CTMC",best = "big",startweek = 5){
+  # RatingsPredict predicts the weekly ratings
+  # scores - the output from GetScores
+  # yearvec - the vector of years to perform the analysis on
+  # method - which rating method to test
+  # best - is a bigger rating better?
+  # startweek - the first week to predict games. We need to give the teams some time to play more than 1 or 2 opponent or else the rating systems won't work
   results <- data.frame()
   for(year in yearvec){
     maxweek <- max(scores[scores$Year == year,"Week"])
@@ -125,6 +150,7 @@ RatingsPredict <- function(scores,yearvec,method = "CTMC",best = "small",startwe
 }
 
 Wrapper <- function(years){
+  # Wrapper performs all funcions in a row and returns the prediction results
   scores <- GetScores(years,homeadjust = T,fbs = T)
   ctmcratings <- RatingsPredict(scores,years,method = "CTMC",best = "large",startweek = 5)
   masseyratings <- RatingsPredict(scores,years,method = "Massey",best = "large",startweek = 5)
